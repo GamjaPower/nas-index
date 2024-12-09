@@ -8,7 +8,7 @@ export const isUUID = z.string().uuid();
 export enum AuthType {
   OVERRIDE_AUTH = 'override_auth',
   USER_PROVIDED = 'user_provided',
-  SYSTEM_DEFINED = 'SYSTEM_DEFINED',
+  SYSTEM_DEFINED = 'system_defined',
 }
 
 export const authTypeSchema = z.nativeEnum(AuthType);
@@ -30,8 +30,9 @@ export enum EModelEndpoint {
 
 export const paramEndpoints = new Set<EModelEndpoint | string>([
   EModelEndpoint.agents,
-  EModelEndpoint.bedrock,
   EModelEndpoint.openAI,
+  EModelEndpoint.bedrock,
+  EModelEndpoint.azureOpenAI,
   EModelEndpoint.anthropic,
   EModelEndpoint.custom,
 ]);
@@ -140,9 +141,9 @@ export const defaultAgentFormValues = {
   tools: [],
   provider: {},
   projectIds: [],
-  code_interpreter: false,
-  image_vision: false,
-  retrieval: false,
+  isCollaborative: false,
+  [Tools.execute_code]: false,
+  [Tools.file_search]: false,
 };
 
 export const ImageVisionTool: FunctionTool = {
@@ -167,7 +168,7 @@ export const openAISettings = {
   },
   temperature: {
     min: 0,
-    max: 1,
+    max: 2,
     step: 0.01,
     default: 1,
   },
@@ -231,7 +232,7 @@ export const googleSettings = {
   topK: {
     min: 1,
     max: 40,
-    step: 0.01,
+    step: 1,
     default: 40,
   },
 };
@@ -240,7 +241,7 @@ const ANTHROPIC_MAX_OUTPUT = 8192;
 const LEGACY_ANTHROPIC_MAX_OUTPUT = 4096;
 export const anthropicSettings = {
   model: {
-    default: 'claude-3-5-sonnet-20240620',
+    default: 'claude-3-5-sonnet-20241022',
   },
   temperature: {
     min: 0,
@@ -368,7 +369,7 @@ export const tPluginSchema = z.object({
   pluginKey: z.string(),
   description: z.string(),
   icon: z.string(),
-  authConfig: z.array(tPluginAuthConfigSchema),
+  authConfig: z.array(tPluginAuthConfigSchema).optional(),
   authenticated: z.boolean().optional(),
   isButton: z.boolean().optional(),
 });
@@ -444,12 +445,12 @@ export const tMessageSchema = z.object({
   bg: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
   title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
-  sender: z.string(),
+  sender: z.string().optional(),
   text: z.string(),
   generation: z.string().nullable().optional(),
   isEdited: z.boolean().optional(),
   isCreatedByUser: z.boolean(),
-  error: z.boolean(),
+  error: z.boolean().optional(),
   createdAt: z
     .string()
     .optional()
@@ -468,6 +469,13 @@ export const tMessageSchema = z.object({
   iconURL: z.string().optional(),
 });
 
+export type TAttachmentMetadata = { messageId: string; toolCallId: string };
+export type TAttachment =
+  | (TFile & TAttachmentMetadata)
+  | (Pick<TFile, 'filename' | 'filepath' | 'conversationId'> & {
+      expiresAt: number;
+    } & TAttachmentMetadata);
+
 export type TMessage = z.input<typeof tMessageSchema> & {
   children?: TMessage[];
   plugin?: TResPlugin | null;
@@ -476,6 +484,7 @@ export type TMessage = z.input<typeof tMessageSchema> & {
   files?: Partial<TFile>[];
   depth?: number;
   siblingIndex?: number;
+  attachments?: TAttachment[];
 };
 
 export const coerceNumber = z.union([z.number(), z.string()]).transform((val) => {
@@ -508,6 +517,7 @@ export const tConversationSchema = z.object({
   conversationId: z.string().nullable(),
   endpoint: eModelEndpointSchema.nullable(),
   endpointType: eModelEndpointSchema.optional(),
+  isArchived: z.boolean().optional(),
   title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
   user: z.string().optional(),
   messages: z.array(z.string()).optional(),
@@ -821,7 +831,7 @@ export function removeNullishValues<T extends Record<string, unknown>>(obj: T): 
 
   (Object.keys(newObj) as Array<keyof T>).forEach((key) => {
     const value = newObj[key];
-    if (value === undefined || value === null || value === '') {
+    if (value === undefined || value === null) {
       delete newObj[key];
     }
   });
@@ -930,6 +940,7 @@ export const agentsSchema = tConversationSchema
 export const openAISchema = tConversationSchema
   .pick({
     model: true,
+    modelLabel: true,
     chatGptLabel: true,
     promptPrefix: true,
     temperature: true,
@@ -1017,6 +1028,7 @@ export const compactChatGPTSchema = tConversationSchema
 export const compactPluginsSchema = tConversationSchema
   .pick({
     model: true,
+    modelLabel: true,
     chatGptLabel: true,
     promptPrefix: true,
     temperature: true,
@@ -1032,6 +1044,9 @@ export const compactPluginsSchema = tConversationSchema
   })
   .transform((obj) => {
     const newObj: Partial<TConversation> = { ...obj };
+    if (newObj.modelLabel === null) {
+      delete newObj.modelLabel;
+    }
     if (newObj.chatGptLabel === null) {
       delete newObj.chatGptLabel;
     }
@@ -1081,13 +1096,14 @@ export type TBanner = z.infer<typeof tBannerSchema>;
 
 export const compactAgentsSchema = tConversationSchema
   .pick({
-    model: true,
-    agent_id: true,
-    instructions: true,
-    additional_instructions: true,
+    spec: true,
+    // model: true,
     iconURL: true,
     greeting: true,
-    spec: true,
+    agent_id: true,
+    resendFiles: true,
+    instructions: true,
+    additional_instructions: true,
   })
   .transform(removeNullishValues)
   .catch(() => ({}));

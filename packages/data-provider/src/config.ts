@@ -114,10 +114,10 @@ export type TAzureModelMapSchema = {
   group: string;
 };
 
-export type TAzureModelGroupMap = Record<string, TAzureModelMapSchema>;
+export type TAzureModelGroupMap = Record<string, TAzureModelMapSchema | undefined>;
 export type TAzureGroupMap = Record<
   string,
-  TAzureBaseSchema & { models: Record<string, TAzureModelConfig> }
+  (TAzureBaseSchema & { models: Record<string, TAzureModelConfig | undefined> }) | undefined
 >;
 
 export type TValidatedAzureConfig = {
@@ -135,6 +135,15 @@ export enum Capabilities {
   code_interpreter = 'code_interpreter',
   image_vision = 'image_vision',
   retrieval = 'retrieval',
+  actions = 'actions',
+  tools = 'tools',
+}
+
+export enum AgentCapabilities {
+  hide_sequential_outputs = 'hide_sequential_outputs',
+  end_after_tools = 'end_after_tools',
+  execute_code = 'execute_code',
+  file_search = 'file_search',
   actions = 'actions',
   tools = 'tools',
 }
@@ -468,6 +477,7 @@ export const configSchema = z.object({
       bookmarks: z.boolean().optional(),
       presets: z.boolean().optional(),
       prompts: z.boolean().optional(),
+      agents: z.boolean().optional(),
     })
     .default({
       endpointsMenu: true,
@@ -478,6 +488,7 @@ export const configSchema = z.object({
       multiConvo: true,
       bookmarks: true,
       prompts: true,
+      agents: true,
     }),
   fileStrategy: fileSourceSchema.default(FileSources.local),
   registration: z
@@ -543,6 +554,7 @@ export enum KnownEndpoints {
   shuttleai = 'shuttleai',
   'together.ai' = 'together.ai',
   unify = 'unify',
+  xai = 'xai',
 }
 
 export enum FetchTokenConfig {
@@ -577,6 +589,8 @@ export const alternateName = {
   [EModelEndpoint.anthropic]: 'Anthropic',
   [EModelEndpoint.custom]: 'Custom',
   [EModelEndpoint.bedrock]: 'AWS Bedrock',
+  [KnownEndpoints.ollama]: 'Ollama',
+  [KnownEndpoints.xai]: 'xAI',
 };
 
 const sharedOpenAIModels = [
@@ -600,7 +614,10 @@ const sharedOpenAIModels = [
 ];
 
 const sharedAnthropicModels = [
+  'claude-3-5-haiku-20241022',
+  'claude-3-5-sonnet-20241022',
   'claude-3-5-sonnet-20240620',
+  'claude-3-5-sonnet-latest',
   'claude-3-opus-20240229',
   'claude-3-sonnet-20240229',
   'claude-3-haiku-20240307',
@@ -614,7 +631,9 @@ const sharedAnthropicModels = [
 ];
 
 export const bedrockModels = [
+  'anthropic.claude-3-5-sonnet-20241022-v2:0',
   'anthropic.claude-3-5-sonnet-20240620-v1:0',
+  'anthropic.claude-3-5-haiku-20241022-v1:0',
   'anthropic.claude-3-haiku-20240307-v1:0',
   'anthropic.claude-3-opus-20240229-v1:0',
   'anthropic.claude-3-sonnet-20240229-v1:0',
@@ -745,6 +764,7 @@ export const visionModels = [
 ];
 export enum VisionModes {
   generative = 'generative',
+  agents = 'agents',
 }
 
 export function validateVisionModel({
@@ -916,6 +936,10 @@ export enum ViolationTypes {
    * Verify Conversation Access violation.
    */
   CONVO_ACCESS = 'convo_access',
+  /**
+   * Tool Call Limit Violation.
+   */
+  TOOL_CALL_LIMIT = 'tool_call_limit',
 }
 
 /**
@@ -1063,13 +1087,15 @@ export enum TTSProviders {
 /** Enum for app-wide constants */
 export enum Constants {
   /** Key for the app's version. */
-  VERSION = 'v0.7.5-rc2',
+  VERSION = 'v0.7.5',
   /** Key for the Custom Config's version (librechat.yaml). */
-  CONFIG_VERSION = '1.1.7',
+  CONFIG_VERSION = '1.1.8',
   /** Standard value for the first message's `parentMessageId` value, to indicate no parent exists. */
   NO_PARENT = '00000000-0000-0000-0000-000000000000',
   /** Standard value for the initial conversationId before a request is sent */
   NEW_CONVO = 'new',
+  /** Standard value for the conversationId used for search queries */
+  SEARCH = 'search',
   /** Fixed, encoded domain length for Azure OpenAI Assistants Function name parsing. */
   ENCODED_DOMAIN_LENGTH = 10,
   /** Identifier for using current_model in multi-model requests. */
@@ -1119,6 +1145,10 @@ export enum LocalStorageKeys {
   FILES_DRAFT = 'filesDraft_',
   /** Key for last Selected Prompt Category */
   LAST_PROMPT_CATEGORY = 'lastPromptCategory',
+  /** Key for rendering User Messages as Markdown */
+  ENABLE_USER_MSG_MARKDOWN = 'enableUserMsgMarkdown',
+  /** Key for displaying analysis tool code input */
+  SHOW_ANALYSIS_CODE = 'showAnalysisCode',
 }
 
 export enum ForkOptions {

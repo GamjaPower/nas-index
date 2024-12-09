@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const mime = require('mime');
 const { v4 } = require('uuid');
@@ -8,25 +9,54 @@ const {
   FileSources,
   imageExtRegex,
   EModelEndpoint,
+  EToolResources,
   mergeFileConfig,
   hostImageIdSuffix,
   checkOpenAIStorage,
+  removeNullishValues,
   hostImageNamePrefix,
   isAssistantsEndpoint,
 } = require('librechat-data-provider');
+const { EnvVar } = require('@librechat/agents');
 const { addResourceFileId, deleteResourceFileId } = require('~/server/controllers/assistants/v2');
 const { convertImage, resizeAndConvert } = require('~/server/services/Files/images');
+const { addAgentResourceFile, removeAgentResourceFiles } = require('~/models/Agent');
 const { getOpenAIClient } = require('~/server/controllers/assistants/helpers');
 const { createFile, updateFileUsage, deleteFiles } = require('~/models/File');
+const { loadAuthValues } = require('~/app/clients/tools/util');
 const { LB_QueueAsyncCall } = require('~/server/utils/queue');
 const { getStrategyFunctions } = require('./strategies');
 const { determineFileType } = require('~/server/utils');
 const { logger } = require('~/config');
 
-const processFiles = async (files) => {
+/**
+ *
+ * @param {Array<MongoFile>} files
+ * @param {Array<string>} [fileIds]
+ * @returns
+ */
+const processFiles = async (files, fileIds) => {
   const promises = [];
+  const seen = new Set();
+
   for (let file of files) {
     const { file_id } = file;
+    if (seen.has(file_id)) {
+      continue;
+    }
+    seen.add(file_id);
+    promises.push(updateFileUsage({ file_id }));
+  }
+
+  if (!fileIds) {
+    return await Promise.all(promises);
+  }
+
+  for (let file_id of fileIds) {
+    if (seen.has(file_id)) {
+      continue;
+    }
+    seen.add(file_id);
     promises.push(updateFileUsage({ file_id }));
   }
 
@@ -38,7 +68,7 @@ const processFiles = async (files) => {
  * Enqueues the delete operation to the leaky bucket queue if necessary, or adds it directly to promises.
  *
  * @param {object} params - The passed parameters.
- * @param {Express.Request} params.req - The express request object.
+ * @param {ServerRequest} params.req - The express request object.
  * @param {MongoFile} params.file - The file object to delete.
  * @param {Function} params.deleteFile - The delete file function.
  * @param {Promise[]} params.promises - The array of promises to await.
@@ -85,8 +115,9 @@ function enqueueDeleteOperation({ req, file, deleteFile, promises, resolvedFileI
  *
  * @param {Object} params - The params object.
  * @param {MongoFile[]} params.files - The file objects to delete.
- * @param {Express.Request} params.req - The express request object.
+ * @param {ServerRequest} params.req - The express request object.
  * @param {DeleteFilesBody} params.req.body - The request body.
+ * @param {string} [params.req.body.agent_id] - The agent ID if file uploaded is associated to an agent.
  * @param {string} [params.req.body.assistant_id] - The assistant ID if file uploaded is associated to an assistant.
  * @param {string} [params.req.body.tool_resource] - The tool resource if assistant file uploaded is associated to a tool resource.
  *
@@ -121,8 +152,17 @@ const processDeleteRequest = async ({ req, files }) => {
     await initializeClients();
   }
 
+  const agentFiles = [];
+
   for (const file of files) {
     const source = file.source ?? FileSources.local;
+
+    if (req.body.agent_id && req.body.tool_resource) {
+      agentFiles.push({
+        tool_resource: req.body.tool_resource,
+        file_id: file.file_id,
+      });
+    }
 
     if (checkOpenAIStorage(source) && !client[source]) {
       await initializeClients();
@@ -163,6 +203,15 @@ const processDeleteRequest = async ({ req, files }) => {
 
     deletionMethods[source] = deleteFile;
     enqueueDeleteOperation({ req, file, deleteFile, promises, resolvedFileIds, openai });
+  }
+
+  if (agentFiles.length > 0) {
+    promises.push(
+      removeAgentResourceFiles({
+        agent_id: req.body.agent_id,
+        files: agentFiles,
+      }),
+    );
   }
 
   await Promise.allSettled(promises);
@@ -224,14 +273,14 @@ const processFileURL = async ({ fileStrategy, userId, URL, fileName, basePath, c
  * Saves file metadata to the database with an expiry TTL.
  *
  * @param {Object} params - The parameters object.
- * @param {Express.Request} params.req - The Express request object.
+ * @param {ServerRequest} params.req - The Express request object.
  * @param {Express.Response} [params.res] - The Express response object.
- * @param {Express.Multer.File} params.file - The uploaded file.
  * @param {ImageMetadata} params.metadata - Additional metadata for the file.
  * @param {boolean} params.returnFile - Whether to return the file metadata or return response as normal.
  * @returns {Promise<void>}
  */
-const processImageFile = async ({ req, res, file, metadata, returnFile = false }) => {
+const processImageFile = async ({ req, res, metadata, returnFile = false }) => {
+  const { file } = req;
   const source = req.app.locals.fileStrategy;
   const { handleImageUpload } = getStrategyFunctions(source);
   const { file_id, temp_file_id, endpoint } = metadata;
@@ -271,7 +320,7 @@ const processImageFile = async ({ req, res, file, metadata, returnFile = false }
  * returns minimal file metadata, without saving to the database.
  *
  * @param {Object} params - The parameters object.
- * @param {Express.Request} params.req - The Express request object.
+ * @param {ServerRequest} params.req - The Express request object.
  * @param {FileContext} params.context - The context of the file (e.g., 'avatar', 'image_generation', etc.)
  * @param {boolean} [params.resize=true] - Whether to resize and convert the image to target format. Default is `true`.
  * @param {{ buffer: Buffer, width: number, height: number, bytes: number, filename: string, type: string, file_id: string }} [params.metadata] - Required metadata for the file if resize is false.
@@ -317,13 +366,12 @@ const uploadImageBuffer = async ({ req, context, metadata = {}, resize = true })
  * Files must be deleted from the server filesystem manually.
  *
  * @param {Object} params - The parameters object.
- * @param {Express.Request} params.req - The Express request object.
+ * @param {ServerRequest} params.req - The Express request object.
  * @param {Express.Response} params.res - The Express response object.
- * @param {Express.Multer.File} params.file - The uploaded file.
  * @param {FileMetadata} params.metadata - Additional metadata for the file.
  * @returns {Promise<void>}
  */
-const processFileUpload = async ({ req, res, file, metadata }) => {
+const processFileUpload = async ({ req, res, metadata }) => {
   const isAssistantUpload = isAssistantsEndpoint(metadata.endpoint);
   const assistantSource =
     metadata.endpoint === EModelEndpoint.azureAssistants ? FileSources.azure : FileSources.openai;
@@ -337,6 +385,7 @@ const processFileUpload = async ({ req, res, file, metadata }) => {
     ({ openai } = await getOpenAIClient({ req }));
   }
 
+  const { file } = req;
   const {
     id,
     bytes,
@@ -399,6 +448,111 @@ const processFileUpload = async ({ req, res, file, metadata }) => {
 };
 
 /**
+ * Applies the current strategy for file uploads.
+ * Saves file metadata to the database with an expiry TTL.
+ * Files must be deleted from the server filesystem manually.
+ *
+ * @param {Object} params - The parameters object.
+ * @param {ServerRequest} params.req - The Express request object.
+ * @param {Express.Response} params.res - The Express response object.
+ * @param {FileMetadata} params.metadata - Additional metadata for the file.
+ * @returns {Promise<void>}
+ */
+const processAgentFileUpload = async ({ req, res, metadata }) => {
+  const { file } = req;
+  const { agent_id, tool_resource } = metadata;
+  if (agent_id && !tool_resource) {
+    throw new Error('No tool resource provided for agent file upload');
+  }
+
+  if (tool_resource === EToolResources.file_search && file.mimetype.startsWith('image')) {
+    throw new Error('Image uploads are not supported for file search tool resources');
+  }
+
+  let messageAttachment = !!metadata.message_file;
+  if (!messageAttachment && !agent_id) {
+    throw new Error('No agent ID provided for agent file upload');
+  }
+
+  let fileInfoMetadata;
+  if (tool_resource === EToolResources.execute_code) {
+    const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(FileSources.execute_code);
+    const result = await loadAuthValues({ userId: req.user.id, authFields: [EnvVar.CODE_API_KEY] });
+    const stream = fs.createReadStream(file.path);
+    const fileIdentifier = await uploadCodeEnvFile({
+      req,
+      stream,
+      filename: file.originalname,
+      apiKey: result[EnvVar.CODE_API_KEY],
+      entity_id: messageAttachment === true ? undefined : agent_id,
+    });
+    fileInfoMetadata = { fileIdentifier };
+  }
+
+  const source =
+    tool_resource === EToolResources.file_search
+      ? FileSources.vectordb
+      : req.app.locals.fileStrategy;
+
+  const { handleFileUpload } = getStrategyFunctions(source);
+  const { file_id, temp_file_id } = metadata;
+
+  const {
+    bytes,
+    filename,
+    filepath: _filepath,
+    embedded,
+    height,
+    width,
+  } = await handleFileUpload({
+    req,
+    file,
+    file_id,
+  });
+
+  let filepath = _filepath;
+
+  if (!messageAttachment && tool_resource) {
+    await addAgentResourceFile({
+      req,
+      file_id,
+      agent_id,
+      tool_resource,
+    });
+  }
+
+  if (file.mimetype.startsWith('image')) {
+    const result = await processImageFile({
+      req,
+      file,
+      metadata: { file_id: v4() },
+      returnFile: true,
+    });
+    filepath = result.filepath;
+  }
+
+  const fileInfo = removeNullishValues({
+    user: req.user.id,
+    file_id,
+    temp_file_id,
+    bytes,
+    filepath,
+    filename: filename ?? file.originalname,
+    context: messageAttachment ? FileContext.message_attachment : FileContext.agents,
+    model: messageAttachment ? undefined : req.body.model,
+    metadata: fileInfoMetadata,
+    type: file.mimetype,
+    embedded,
+    source,
+    height,
+    width,
+  });
+
+  const result = await createFile(fileInfo, true);
+  res.status(200).json({ message: 'Agent file uploaded and processed successfully', ...result });
+};
+
+/**
  * @param {object} params - The params object.
  * @param {OpenAI} params.openai - The OpenAI client instance.
  * @param {string} params.file_id - The ID of the file to retrieve.
@@ -454,7 +608,7 @@ const processOpenAIFile = async ({
 /**
  * Process OpenAI image files, convert to target format, save and return file metadata.
  * @param {object} params - The params object.
- * @param {Express.Request} params.req - The Express request object.
+ * @param {ServerRequest} params.req - The Express request object.
  * @param {Buffer} params.buffer - The image buffer.
  * @param {string} params.file_id - The file ID.
  * @param {string} params.filename - The filename.
@@ -586,22 +740,23 @@ async function retrieveAndProcessFile({
  * Filters a file based on its size and the endpoint origin.
  *
  * @param {Object} params - The parameters for the function.
- * @param {object} params.req - The request object from Express.
+ * @param {ServerRequest} params.req - The request object from Express.
  * @param {string} [params.req.endpoint]
  * @param {string} [params.req.file_id]
  * @param {number} [params.req.width]
  * @param {number} [params.req.height]
  * @param {number} [params.req.version]
- * @param {Express.Multer.File} params.file - The file uploaded to the server via multer.
  * @param {boolean} [params.image] - Whether the file expected is an image.
+ * @param {boolean} [params.isAvatar] - Whether the file expected is a user or entity avatar.
  * @returns {void}
  *
  * @throws {Error} If a file exception is caught (invalid file size or type, lack of metadata).
  */
-function filterFile({ req, file, image }) {
+function filterFile({ req, image, isAvatar }) {
+  const { file } = req;
   const { endpoint, file_id, width, height } = req.body;
 
-  if (!file_id) {
+  if (!file_id && !isAvatar) {
     throw new Error('No file_id provided');
   }
 
@@ -610,20 +765,25 @@ function filterFile({ req, file, image }) {
   }
 
   /* parse to validate api call, throws error on fail */
-  isUUID.parse(file_id);
+  if (!isAvatar) {
+    isUUID.parse(file_id);
+  }
 
-  if (!endpoint) {
+  if (!endpoint && !isAvatar) {
     throw new Error('No endpoint provided');
   }
 
   const fileConfig = mergeFileConfig(req.app.locals.fileConfig);
 
-  const { fileSizeLimit, supportedMimeTypes } =
+  const { fileSizeLimit: sizeLimit, supportedMimeTypes } =
     fileConfig.endpoints[endpoint] ?? fileConfig.endpoints.default;
+  const fileSizeLimit = isAvatar === true ? fileConfig.avatarSizeLimit : sizeLimit;
 
   if (file.size > fileSizeLimit) {
     throw new Error(
-      `File size limit of ${fileSizeLimit / megabyte} MB exceeded for ${endpoint} endpoint`,
+      `File size limit of ${fileSizeLimit / megabyte} MB exceeded for ${
+        isAvatar ? 'avatar upload' : `${endpoint} endpoint`
+      }`,
     );
   }
 
@@ -633,7 +793,7 @@ function filterFile({ req, file, image }) {
     throw new Error('Unsupported file type');
   }
 
-  if (!image) {
+  if (!image || isAvatar === true) {
     return;
   }
 
@@ -654,5 +814,6 @@ module.exports = {
   uploadImageBuffer,
   processFileUpload,
   processDeleteRequest,
+  processAgentFileUpload,
   retrieveAndProcessFile,
 };

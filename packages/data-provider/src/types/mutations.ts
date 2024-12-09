@@ -1,6 +1,7 @@
 import * as types from '../types';
 import * as r from '../roles';
 import {
+  Tools,
   Assistant,
   AssistantCreateParams,
   AssistantUpdateParams,
@@ -165,6 +166,12 @@ export type UpdateSharedLinkOptions = MutationOptions<
   types.TSharedLink,
   Partial<types.TSharedLink>
 >;
+
+export type ArchiveConvoOptions = MutationOptions<
+  types.TArchiveConversationResponse,
+  types.TArchiveConversationRequest
+>;
+
 export type DeleteSharedLinkOptions = MutationOptions<types.TSharedLink, { shareId: string }>;
 
 export type TUpdatePromptContext =
@@ -216,18 +223,29 @@ export type RegistrationOptions = MutationOptions<
   types.TError
 >;
 
-export type UpdatePromptPermVars = {
+export type UpdatePermVars<T> = {
   roleName: string;
-  updates: Partial<r.TPromptPermissions>;
+  updates: Partial<T>;
 };
 
-export type UpdatePromptPermResponse = r.TRole;
+export type UpdatePromptPermVars = UpdatePermVars<r.TPromptPermissions>;
+
+export type UpdateAgentPermVars = UpdatePermVars<r.TAgentPermissions>;
+
+export type UpdatePermResponse = r.TRole;
 
 export type UpdatePromptPermOptions = MutationOptions<
-  UpdatePromptPermResponse,
+  UpdatePermResponse,
   UpdatePromptPermVars,
   unknown,
-  types.TError
+  types.TError | null | undefined
+>;
+
+export type UpdateAgentPermOptions = MutationOptions<
+  UpdatePermResponse,
+  UpdateAgentPermVars,
+  unknown,
+  types.TError | null | undefined
 >;
 
 export type UpdateConversationTagOptions = MutationOptions<
@@ -235,3 +253,34 @@ export type UpdateConversationTagOptions = MutationOptions<
   types.TConversationTagRequest
 >;
 export type DeleteConversationTagOptions = MutationOptions<types.TConversationTag, string>;
+
+export type AcceptTermsMutationOptions = MutationOptions<
+  types.TAcceptTermsResponse,
+  void,
+  unknown,
+  void
+>;
+
+/* Tools */
+export type UpdatePluginAuthOptions = MutationOptions<types.TUser, types.TUpdateUserPlugins>;
+
+export type ToolParamsMap = {
+  [Tools.execute_code]: {
+    lang: string;
+    code: string;
+  };
+};
+
+export type ToolId = keyof ToolParamsMap;
+
+export type ToolParams<T extends ToolId> = ToolParamsMap[T] & {
+  messageId: string;
+  partIndex?: number;
+  blockIndex?: number;
+  conversationId: string;
+};
+export type ToolCallResponse = { result: unknown; attachments?: types.TAttachment[] };
+export type ToolCallMutationOptions<T extends ToolId> = MutationOptions<
+  ToolCallResponse,
+  ToolParams<T>
+>;

@@ -35,7 +35,7 @@ export default {
     'Aşağıdaki dosyalar yalnızca Kod Yorumlayıcı için kullanılabilir:',
   com_assistants_retrieval: 'Geri Getirme',
   com_assistants_search_name: 'Asistan adında ara',
-  com_assistants_tools: 'Araçlar',
+  com_ui_tools: 'Araçlar',
   com_assistants_actions: 'Eylemler',
   com_assistants_add_tools: 'Araçları Ekle',
   com_assistants_add_actions: 'Eylem Ekle',
@@ -450,7 +450,7 @@ export default {
   com_endpoint_preset_default_item: 'Varsayılan:',
   com_endpoint_preset_default_none: 'Aktif varsayılan hazır ayar yok.',
   com_endpoint_preset_title: 'Hazır Ayar',
-  com_endpoint_preset_saved: 'Kaydedildi!',
+  com_ui_saved: 'Kaydedildi!',
   com_endpoint_preset_default: 'şu anda varsayılan hazır ayar.',
   com_endpoint_preset: 'hazır ayar',
   com_endpoint_presets: 'hazır ayarlar',
@@ -641,4 +641,5 @@ export default {
   com_nav_lang_dutch: 'Nederlands',
   com_nav_lang_indonesia: 'Indonesia',
   com_nav_lang_hebrew: 'עברית',
+  com_nav_lang_finnish: 'Suomi',
 };
